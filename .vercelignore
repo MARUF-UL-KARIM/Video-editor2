@@ -1,0 +1,14 @@
+node_modules
+node_modules/**
+dist
+dist/**
+dist-ssr
+.shots
+.git
+.agon-env
+public/ort
+public/mediapipe
+*.wasm
+*.tflite
+*.task
+

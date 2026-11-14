@@ -1,0 +1,6 @@
+NanoTrack v2 (backbone + head), ONNX — https://github.com/HonglinChu/SiamTrackers (Apache License 2.0, see NanoTrack-LICENSE.txt).
+nanotrack_backbone_dyn.onnx is nanotrack_backbone_sim.onnx with the spatial input dimensions marked dynamic so one
+network embeds both the 127×127 exemplar and the 255×255 search window; the weights are unchanged.
+
+The Features tracker is an independent implementation of consensus-based matching and tracking in the spirit of
+CMT (G. Nebehay, R. Pflugfelder, "Clustering of Static-Adaptive Correspondences for Deformable Object Tracking", CVPR 2015).
