@@ -153,7 +153,7 @@ export const API_DOCS: { sig: string; doc: string }[] = [
   { sig: 'offcut.setTransition(clipId, type, duration)', doc: 'crossfade, dipBlack, slideLeft, wipeRight, zoomIn, blur, spin…' },
   { sig: 'offcut.autoCaption({ model, language, maxWords })', doc: 'Run on-device Whisper and add captions.' },
   { sig: 'offcut.tts(text, { voice, speed, captions })', doc: 'Generate speech locally and place it at the playhead.' },
-  { sig: 'offcut.track(clipId, { tracker, model, shape, … }, quad?)', doc: 'Motion-track from the playhead. tracker: object, flow, features, frame, face, hands, body, dual.' },
+  { sig: 'offcut.track(clipId, { tracker, model, shape, edgeTrack, edgeSensitivity, edgeDots, … }, quad?)', doc: 'Motion-track from the playhead. Set edgeTrack: true to detect edges inside the tracking circle and place collective edge tracking dots.' },
   { sig: 'offcut.attach(layerId, trackedClipId) / offcut.detach(layerId)', doc: 'Make a text, image or overlay follow tracked motion.' },
   { sig: 'offcut.export({ resolution, fps, quality, format, download })', doc: 'Render. Resolves to { blob, width, height, … }.' },
   { sig: 'offcut.seek(t) · play() · pause() · undo() · redo()', doc: 'Transport and history.' },

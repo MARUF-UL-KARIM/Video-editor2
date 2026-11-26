@@ -8,6 +8,7 @@ import { runtime } from '../runtime';
 import { ensureSegmenter, segmentStill, segmenterState } from '../segmenter';
 import { getState } from '../store';
 import { disposeTracker, initTracker, stepTracker, warmObjectTracker, type MaskPayload, type StepResult } from './client';
+import { sampleEdgePreview } from './edgePreview';
 import { openFrameSource, type FrameSource } from './frames';
 import { quadCx, quadCy } from './math';
 import { absorbLockDraft } from './lock';
@@ -102,7 +103,7 @@ export async function startTracking(clipId: string, run: TrackRun = {}): Promise
     if (semantic) {
       ui.patch({ status: 'Loading the landmark model…' });
       await ensureLandmarker(semantic);
-    } else if (settings.tracker === 'object') {
+    } else if (settings.tracker === 'object' && !settings.edgeTrack) {
       ui.patch({ status: 'Loading the object tracker…' });
       await warmObjectTracker();
     }
@@ -123,6 +124,7 @@ export async function startTracking(clipId: string, run: TrackRun = {}): Promise
 
     let tracker: SemanticTracker | null = null;
     let first: StepResult | null = null;
+    let initPoints: Float32Array | null = null;
     if (semantic) {
       tracker = new SemanticTracker(semantic, settings.selection, settings.landmark, aspect);
       // the landmark graph needs a frame or two to warm up on a new shot
@@ -132,13 +134,15 @@ export async function startTracking(clipId: string, run: TrackRun = {}): Promise
       failure = r.error;
       first = r.first;
     } else {
-      failure = await initTracker(settings, region, source.read(), mask());
+      const initRes = await initTracker(settings, region, source.read(), mask());
+      failure = initRes.error;
+      initPoints = initRes.points ?? null;
     }
     if (failure) throw new Error(MESSAGES[failure] ?? failure);
 
     const q0 = first ? first.quad : region;
-    live = { clipId, t: [t0], q: q0.slice(), c: [1], s: [0], roi: first ? first.roi : region, points: first?.points ?? null, state: 0 };
-    ui.patch({ phase: 'analyzing', status: 'Analyzing', live, tick: 1 });
+    live = { clipId, t: [t0], q: q0.slice(), c: [1], s: [0], roi: first ? first.roi : region, points: first?.points ?? initPoints, state: 0 };
+    ui.patch({ phase: 'analyzing', status: settings.edgeTrack ? 'Edge tracking' : 'Analyzing', live, tick: 1 });
 
     const began = performance.now();
     let lastUi = 0;
@@ -164,7 +168,7 @@ export async function startTracking(clipId: string, run: TrackRun = {}): Promise
       const now = performance.now();
       if (now - lastUi > 90) {
         lastUi = now;
-        useTrack.setState((s) => ({ tick: s.tick + 1, frames: n, progress: Math.min(1, (t - srcStart) / (limit - srcStart)), speed: (n * 1000) / Math.max(1, now - began), status: r.state ? 'Searching' : 'Analyzing' }));
+        useTrack.setState((s) => ({ tick: s.tick + 1, frames: n, progress: Math.min(1, (t - srcStart) / (limit - srcStart)), speed: (n * 1000) / Math.max(1, now - began), status: r.state ? 'Searching' : settings.edgeTrack ? 'Edge tracking' : 'Analyzing' }));
         engine.seek(projectTimeOf(clip, t));
         await frameTick();
       } else if (tracker && n % 2 === 0) await frameTick();
@@ -258,6 +262,42 @@ export async function detectPreview(clipId: string): Promise<void> {
     getState().toast('The landmark model could not be loaded', 'error');
   } finally {
     if (seq === detectSeq) trackState().patch({ detecting: false });
+  }
+}
+
+let edgePreviewSeq = 0;
+
+/** Edge Track: run the edge-detection filter inside the tracking circle on the current frame for live dot preview. */
+export async function refreshEdgePreview(clipId: string): Promise<void> {
+  const ui = trackState();
+  const s = effectiveSettings(ui.settings);
+  if (!s.edgeTrack || ui.phase !== 'idle') {
+    if (ui.edgePreview) ui.patch({ edgePreview: null });
+    return;
+  }
+  const seq = ++edgePreviewSeq;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (seq !== edgePreviewSeq) return;
+    const st = getState();
+    const clip = st.project.clips.find((c) => c.id === clipId);
+    if (!clip || trackState().phase !== 'idle') return;
+    const latest = effectiveSettings(trackState().settings);
+    if (!latest.edgeTrack) return;
+    const el = engine.videoFor(clipId);
+    const targetSrc = sourceTimeOf(clip, st.time);
+    const aligned = el ? Math.abs(el.currentTime - targetSrc) < 0.08 || attempt >= 8 : false;
+    if (el && el.readyState >= 2 && !el.seeking && el.videoWidth > 0 && aligned) {
+      const aspect = assetAspect(st.project, clip);
+      const region = regionFor(clip, aspect, latest);
+      const preview = sampleEdgePreview(el, clipId, targetSrc, region, {
+        resolution: latest.resolution,
+        sensitivity: latest.edgeSensitivity ?? 55,
+        maxDots: latest.edgeDots ?? 32,
+      });
+      if (seq === edgePreviewSeq) trackState().patch({ edgePreview: preview });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 80));
   }
 }
 

@@ -59,11 +59,16 @@ export async function warmObjectTracker(): Promise<void> {
   if (!r.ok) throw new Error(String(r.error));
 }
 
-/** Returns null on success, or the reason the selection cannot be tracked ('low-detail', …). */
-export async function initTracker(settings: TrackSettings, quad: number[], frame: ImageData, mask?: MaskPayload | null): Promise<string | null> {
+export interface InitResult {
+  error: string | null;
+  points?: Float32Array | null;
+}
+
+/** Returns `{ error: null, points }` on success, or `{ error: 'low-detail' | ... }` on failure. */
+export async function initTracker(settings: TrackSettings, quad: number[], frame: ImageData, mask?: MaskPayload | null): Promise<InitResult> {
   const data = frame.data.buffer.slice(0);
   const r = await call({ type: 'init', settings, quad, frame: { data, w: frame.width, h: frame.height }, mask: mask ?? null, modelBase: base() }, [data]);
-  return r.ok ? null : String(r.error);
+  return r.ok ? { error: null, points: (r.points as Float32Array | null | undefined) ?? null } : { error: String(r.error) };
 }
 
 export async function stepTracker(frame: ImageData, mask?: MaskPayload | null): Promise<StepResult> {

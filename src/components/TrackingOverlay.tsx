@@ -14,6 +14,7 @@ import type { ClipTracking } from '../types';
 const C = {
   select: '#ff6a3d',
   tracked: '#7fd08a',
+  edge: '#38e8d0',
   searching: '#f2c14e',
   lost: '#ff5d5d',
   rescued: '#6fd3e8',
@@ -50,6 +51,7 @@ export function TrackingOverlay({ k }: { k: number }) {
   const settingsRaw = useTrack((s) => s.settings);
   const live = useTrack((s) => s.live);
   const detected = useTrack((s) => s.detected);
+  const edgePreview = useTrack((s) => s.edgePreview);
   const showPoints = useTrack((s) => s.showPoints);
   const moveMode = useTrack((s) => s.moveMode);
   useTrack((s) => s.tick);
@@ -122,30 +124,52 @@ export function TrackingOverlay({ k }: { k: number }) {
 
   // ── live analysis ──
   if (live && live.clipId === clip.id) {
-    const col = live.state ? C.searching : C.tracked;
+    const isEdge = !!settings.edgeTrack;
+    const col = live.state ? C.searching : isEdge ? C.edge : C.tracked;
     const n = live.t.length;
     if (n > 1) {
       const step = Math.max(1, Math.ceil(n / 240));
       const pts: string[] = [];
       for (let i = 0; i < n; i += step) pts.push(P(quadCx(live.q, i * 8), quadCy(live.q, i * 8)).join(','));
-      nodes.push(<polyline key="lp" points={pts.join(' ')} fill="none" stroke={C.tracked} strokeOpacity={0.7} strokeWidth={1.25} />);
+      nodes.push(<polyline key="lp" points={pts.join(' ')} fill="none" stroke={isEdge ? C.edge : C.tracked} strokeOpacity={0.7} strokeWidth={1.25} />);
     }
     if (settings.shape === 'circle' && settings.tracker !== 'frame') nodes.push(<Ellipse key="lr" q={live.roi} P={P} stroke={col} dash={!!live.state} opacity={1} />);
     else nodes.push(<polygon key="lr" points={poly(live.roi)} fill={col} fillOpacity={0.06} stroke={col} strokeWidth={1.75} strokeDasharray={live.state ? '5 4' : undefined} />);
     const last = (live.t.length - 1) * 8;
     const [lcx, lcy] = P(quadCx(live.q, last), quadCy(live.q, last));
-    nodes.push(<Cross key="lc" x={lcx} y={lcy} color={col} />);
     if (showPoints && live.points) {
       const p = live.points;
       const dots: React.ReactNode[] = [];
+      const spokes: React.ReactNode[] = [];
       for (let i = 0; i < p.length; i += 3) {
         const st = p[i + 2];
         const [x, y] = P(p[i], p[i + 1]);
-        const fill = st === POINT_INLIER ? C.tracked : st === POINT_RESCUED ? C.rescued : st === POINT_LANDMARK ? C.fg : st === POINT_OUTLIER ? C.lost : '#777';
-        dots.push(<circle key={i} cx={x} cy={y} r={st === POINT_LANDMARK ? 2.6 : 1.7} fill={fill} fillOpacity={st === POINT_INLIER || st === POINT_LANDMARK ? 0.95 : 0.7} />);
+        if (isEdge) {
+          const fill = st === POINT_INLIER ? C.edge : st === POINT_RESCUED ? C.rescued : st === POINT_OUTLIER ? C.lost : '#777';
+          if (st === POINT_INLIER || st === POINT_RESCUED) {
+            spokes.push(<line key={'s' + i} x1={lcx} y1={lcy} x2={x} y2={y} stroke={C.edge} strokeOpacity={0.14} strokeWidth={0.8} strokeDasharray="2 3" />);
+          }
+          dots.push(
+            <circle
+              key={i}
+              cx={x}
+              cy={y}
+              r={st === POINT_INLIER ? 2.6 : st === POINT_RESCUED ? 2.3 : 1.8}
+              fill={fill}
+              fillOpacity={st === POINT_INLIER ? 0.98 : 0.78}
+              stroke={C.ink}
+              strokeWidth={st === POINT_INLIER || st === POINT_RESCUED ? 1.05 : 0.6}
+            />,
+          );
+        } else {
+          const fill = st === POINT_INLIER ? C.tracked : st === POINT_RESCUED ? C.rescued : st === POINT_LANDMARK ? C.fg : st === POINT_OUTLIER ? C.lost : '#777';
+          dots.push(<circle key={i} cx={x} cy={y} r={st === POINT_LANDMARK ? 2.6 : 1.7} fill={fill} fillOpacity={st === POINT_INLIER || st === POINT_LANDMARK ? 0.95 : 0.7} />);
+        }
       }
-      nodes.push(<g key="pts">{dots}</g>);
+      if (spokes.length) nodes.push(<g key="espk" style={{ pointerEvents: 'none' }}>{spokes}</g>);
+      nodes.push(<g key="pts" style={{ pointerEvents: 'none' }}>{dots}</g>);
     }
+    nodes.push(<Cross key="lc" x={lcx} y={lcy} color={col} />);
   }
 
   // ── selector ──
@@ -223,7 +247,46 @@ export function TrackingOverlay({ k }: { k: number }) {
           }
         });
       }
-      if (!semantic || settings.selection === 'area') nodes.push(<Selector key="sel" region={region} shape={settings.shape} aspect={aspect} P={P} toSrc={toSrc} onChange={setRegion} poly={poly} />);
+      if (!semantic || settings.selection === 'area') {
+        // Edge Track live preview: detected edges + placed edge tracking dots inside the tracking circle
+        if (settings.edgeTrack) {
+          const ep = edgePreview && edgePreview.clipId === clip.id && Math.abs(edgePreview.srcTime - srcTime) < 0.15 ? edgePreview : null;
+          const [ccx, ccy] = P(quadCx(region), quadCy(region));
+          const bot = P((region[4] + region[6]) / 2, (region[5] + region[7]) / 2);
+          if (ep && settings.edgePreview !== false && ep.edges.length > 0) {
+            const eNodes: React.ReactNode[] = [];
+            for (let i = 0; i < ep.edges.length; i += 2) {
+              const [ex, ey] = P(ep.edges[i], ep.edges[i + 1]);
+              eNodes.push(<circle key={i} cx={ex} cy={ey} r={1.15} fill={C.edge} fillOpacity={0.5} />);
+            }
+            nodes.push(<g key="ep-edges" style={{ pointerEvents: 'none' }}>{eNodes}</g>);
+          }
+          nodes.push(<Selector key="sel" region={region} shape={settings.shape} aspect={aspect} P={P} toSrc={toSrc} onChange={setRegion} poly={poly} accent={C.edge} />);
+          if (ep && showPoints && ep.dots.length > 0) {
+            const spokes: React.ReactNode[] = [];
+            const dNodes: React.ReactNode[] = [];
+            for (let i = 0; i < ep.dots.length; i += 2) {
+              const [dx, dy] = P(ep.dots[i], ep.dots[i + 1]);
+              spokes.push(<line key={'s' + i} x1={ccx} y1={ccy} x2={dx} y2={dy} stroke={C.edge} strokeOpacity={0.16} strokeWidth={0.85} strokeDasharray="2 3" />);
+              dNodes.push(<circle key={i} cx={dx} cy={dy} r={2.8} fill={C.edge} stroke={C.ink} strokeWidth={1.25} />);
+            }
+            nodes.push(<g key="ep-spokes" style={{ pointerEvents: 'none' }}>{spokes}</g>);
+            nodes.push(<g key="ep-dots" style={{ pointerEvents: 'none' }}>{dNodes}</g>);
+          }
+          const labelText = ep ? `EDGE TRACK · ${ep.dotCount} DOTS` : 'EDGE TRACK';
+          const pillW = Math.max(76, labelText.length * 5.6 + 14);
+          nodes.push(
+            <g key="ep-badge" style={{ pointerEvents: 'none' }}>
+              <rect x={bot[0] - pillW / 2} y={bot[1] + 10} width={pillW} height={15} rx={7.5} fill={C.ink} fillOpacity={0.86} stroke={C.edge} strokeOpacity={0.75} />
+              <text x={bot[0]} y={bot[1] + 20.5} textAnchor="middle" fill={C.edge} fontSize={8.5} fontWeight={700} letterSpacing={0.65}>
+                {labelText}
+              </text>
+            </g>,
+          );
+        } else {
+          nodes.push(<Selector key="sel" region={region} shape={settings.shape} aspect={aspect} P={P} toSrc={toSrc} onChange={setRegion} poly={poly} />);
+        }
+      }
     }
   }
 
@@ -327,7 +390,7 @@ function Ellipse({ q, P, stroke, dash, opacity, fill }: { q: ArrayLike<number>; 
 }
 
 /** The editable region: drag the body to move, corners to resize (or reshape a quad), the stalk to rotate. */
-function Selector({ region, shape, aspect, P, toSrc, onChange, poly }: { region: number[]; shape: 'circle' | 'rectangle' | 'quad'; aspect: number; P: (x: number, y: number) => [number, number]; toSrc: (e: { clientX: number; clientY: number }) => [number, number]; onChange: (q: number[]) => void; poly: (q: ArrayLike<number>) => string }) {
+function Selector({ region, shape, aspect, P, toSrc, onChange, poly, accent = C.select }: { region: number[]; shape: 'circle' | 'rectangle' | 'quad'; aspect: number; P: (x: number, y: number) => [number, number]; toSrc: (e: { clientX: number; clientY: number }) => [number, number]; onChange: (q: number[]) => void; poly: (q: ArrayLike<number>) => string; accent?: string }) {
   const corners = [0, 1, 2, 3].map((i) => P(region[i * 2], region[i * 2 + 1]));
   const move = (e: RPointerEvent) => {
     const [x0, y0] = toSrc(e);
@@ -374,25 +437,25 @@ function Selector({ region, shape, aspect, P, toSrc, onChange, poly }: { region:
       {shape === 'circle' ? (
         <>
           <g style={{ ...hot, cursor: 'move' }} onPointerDown={move}>
-            <Ellipse q={region} P={P} stroke={C.select} dash={false} opacity={1} fill />
+            <Ellipse q={region} P={P} stroke={accent} dash={false} opacity={1} fill />
           </g>
-          <polygon points={poly(region)} fill="none" stroke={C.select} strokeOpacity={0.35} strokeWidth={1} strokeDasharray="3 4" />
+          <polygon points={poly(region)} fill="none" stroke={accent} strokeOpacity={0.35} strokeWidth={1} strokeDasharray="3 4" />
         </>
       ) : (
-        <polygon points={poly(region)} fill={C.select} fillOpacity={0.08} stroke={C.select} strokeWidth={1.75} style={{ ...hot, cursor: 'move' }} onPointerDown={move} />
+        <polygon points={poly(region)} fill={accent} fillOpacity={0.08} stroke={accent} strokeWidth={1.75} style={{ ...hot, cursor: 'move' }} onPointerDown={move} />
       )}
-      <Cross x={ctr[0]} y={ctr[1]} color={C.select} />
+      <Cross x={ctr[0]} y={ctr[1]} color={accent} />
       {shape === 'rectangle' && (
         <g style={{ ...hot, cursor: 'grab' }} onPointerDown={rotate}>
-          <line x1={top[0]} y1={top[1]} x2={stalk[0]} y2={stalk[1]} stroke={C.select} strokeWidth={1.5} />
+          <line x1={top[0]} y1={top[1]} x2={stalk[0]} y2={stalk[1]} stroke={accent} strokeWidth={1.5} />
           <circle cx={stalk[0]} cy={stalk[1]} r={14} fill="transparent" />
-          <circle cx={stalk[0]} cy={stalk[1]} r={5.5} fill={C.ink} stroke={C.select} strokeWidth={2} />
+          <circle cx={stalk[0]} cy={stalk[1]} r={5.5} fill={C.ink} stroke={accent} strokeWidth={2} />
         </g>
       )}
       {corners.map((c, i) => (
         <g key={i} style={{ ...hot, cursor: shape === 'quad' ? 'crosshair' : i % 2 ? 'nesw-resize' : 'nwse-resize' }} onPointerDown={corner(i)}>
           <circle cx={c[0]} cy={c[1]} r={15} fill="transparent" />
-          {shape === 'quad' ? <circle cx={c[0]} cy={c[1]} r={6} fill={C.select} stroke={C.ink} strokeWidth={2} /> : <rect x={c[0] - 5} y={c[1] - 5} width={10} height={10} rx={2} fill={C.fg} stroke={C.ink} strokeWidth={2} />}
+          {shape === 'quad' ? <circle cx={c[0]} cy={c[1]} r={6} fill={accent} stroke={C.ink} strokeWidth={2} /> : <rect x={c[0] - 5} y={c[1] - 5} width={10} height={10} rx={2} fill={C.fg} stroke={C.ink} strokeWidth={2} />}
         </g>
       ))}
     </g>

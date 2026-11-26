@@ -2,6 +2,7 @@ import { AudioLines, Film, HardDrive, Image as ImageIcon, Plus, Trash2, Upload }
 import { useState } from 'react';
 import { importFile } from '../../lib/media';
 import { runtime } from '../../lib/runtime';
+import { generateSampleClip } from '../../lib/sampleClip';
 import { getState, useStore } from '../../lib/store';
 import { formatBytes, formatClock } from '../../lib/util';
 import type { Asset } from '../../types';
@@ -69,13 +70,22 @@ export function MediaPanel({ onImport }: { onImport: () => void }) {
   const sample = async () => {
     setLoadingSample(true);
     try {
-      const res = await fetch('/sample/sample-clip.mp4');
-      if (!res.ok) throw new Error('missing');
-      const blob = await res.blob();
-      const a = await importFile(new File([blob], 'Sample clip.mp4', { type: 'video/mp4' }));
+      let file: File | null = null;
+      try {
+        const res = await fetch('/sample/sample-clip.mp4');
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.startsWith('video/')) {
+          const blob = await res.blob();
+          if (blob.size > 10_000) file = new File([blob], 'Sample clip.mp4', { type: 'video/mp4' });
+        }
+      } catch {
+        /* fall back to generated sample */
+      }
+      if (!file) file = await generateSampleClip();
+      const a = await importFile(file);
       if (a) getState().addClipFromAsset(a.id);
     } catch {
-      getState().toast('Could not load the bundled sample clip', 'error');
+      getState().toast('Could not load the sample clip', 'error');
     } finally {
       setLoadingSample(false);
     }

@@ -2,6 +2,7 @@
 // Tracking worker. Frames arrive as RGBA at analysis resolution; every tracker runs here so the editor stays
 // responsive while a clip is analysed. Geometry crosses the boundary normalised to the frame (0–1).
 import type { TrackSettings } from '../types';
+import { EdgeTracker } from '../lib/tracking/edgeTracker';
 import { NanoTracker, type OrtLike, type OrtSession } from '../lib/tracking/nano';
 import { DualTracker, PointTracker, type MaskImage, type StepOut, type TrackerFrame } from '../lib/tracking/pointTracker';
 import { buildPyramid, grayFromRGBA } from '../lib/tracking/vision';
@@ -21,10 +22,16 @@ interface InMsg {
   modelBase?: string;
 }
 
-type AnyTracker = { pyramidLevels: number; init(f: TrackerFrame, q: ArrayLike<number>): string | null | Promise<string | null>; step(f: TrackerFrame): StepOut | Promise<StepOut> };
+type AnyTracker = {
+  pyramidLevels: number;
+  init(f: TrackerFrame, q: ArrayLike<number>): string | null | Promise<string | null>;
+  step(f: TrackerFrame): StepOut | Promise<StepOut>;
+  initialPoints?(): Float32Array;
+};
 
 let tracker: AnyTracker | null = null;
 let needsColour = false;
+let skipFullPyramid = false;
 let lastMask: MaskImage | null = null;
 
 let nano: Promise<{ ort: OrtLike; backbone: OrtSession; head: OrtSession }> | null = null;
@@ -83,6 +90,7 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
     if (m.type === 'dispose') {
       tracker = null;
       lastMask = null;
+      skipFullPyramid = false;
       post({ id: m.id, ok: true });
       return;
     }
@@ -90,8 +98,18 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
     if (m.type === 'init') {
       const s = m.settings!;
       const f = m.frame!;
-      needsColour = s.tracker === 'object';
-      if (s.tracker === 'object') {
+      const edgeMode = !!s.edgeTrack && (s.tracker === 'object' || s.tracker === 'flow' || s.tracker === 'features');
+      needsColour = edgeMode || s.tracker === 'object';
+      skipFullPyramid = edgeMode || s.tracker === 'object';
+      if (edgeMode) {
+        tracker = new EdgeTracker({
+          model: s.model,
+          followSize: s.followSize,
+          sensitivity: s.edgeSensitivity ?? 55,
+          maxDots: s.edgeDots ?? 32,
+          mask: s.mask,
+        });
+      } else if (s.tracker === 'object') {
         const n = await loadNano(m.modelBase!);
         tracker = new NanoTracker(n.ort, n.backbone, n.head, { followSize: s.followSize, mask: s.mask });
       } else if (s.tracker === 'dual') {
@@ -109,8 +127,8 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
           mask: s.mask,
         });
       }
-      // enough pyramid for the largest tracker configuration at this resolution
-      const levels = s.tracker === 'object' ? 0 : 4;
+      // enough pyramid for the largest tracker configuration at this resolution (Edge Track builds only a local ROI crop pyramid)
+      const levels = skipFullPyramid ? 0 : 4;
       const frame = makeFrame(f, levels);
       const quad = m.quad!.map((v, i) => (i % 2 ? v * f.h : v * f.w));
       const err = await tracker.init(frame, quad);
@@ -119,13 +137,21 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
         post({ id: m.id, ok: false, error: err });
         return;
       }
-      post({ id: m.id, ok: true, levels });
+      let initPts: Float32Array | null = null;
+      if (tracker.initialPoints) {
+        initPts = tracker.initialPoints();
+        for (let i = 0; i < initPts.length; i += 3) {
+          initPts[i] /= f.w;
+          initPts[i + 1] /= f.h;
+        }
+      }
+      post({ id: m.id, ok: true, levels, points: initPts }, initPts ? [initPts.buffer] : []);
       return;
     }
     if (m.type === 'step') {
       if (!tracker) throw new Error('tracker not initialised');
       const f = m.frame!;
-      const frame = makeFrame(f, needsColour ? 0 : 4);
+      const frame = makeFrame(f, skipFullPyramid ? 0 : 4);
       const r = normalise(await tracker.step(frame), f.w, f.h);
       post({ id: m.id, ok: true, result: r }, r.points ? [r.points.buffer] : []);
     }

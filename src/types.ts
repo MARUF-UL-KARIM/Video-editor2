@@ -169,6 +169,14 @@ export interface TrackSettings {
   selection: TrackSelectionMode;
   /** landmark id used when `selection` is 'points' */
   landmark: string;
+  /** Edge Track: detect edges inside the tracking circle and place tracking dots along them */
+  edgeTrack?: boolean;
+  /** Edge-detection filter sensitivity, 10–100 */
+  edgeSensitivity?: number;
+  /** Target number of tracking dots distributed along detected edges */
+  edgeDots?: number;
+  /** Show the live detected-edge contour overlay inside the tracking circle */
+  edgePreview?: boolean;
 }
 
 export interface MotionAdjust {

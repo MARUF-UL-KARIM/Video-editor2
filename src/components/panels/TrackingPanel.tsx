@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Box,
   Circle,
+  CircleDot,
   Crosshair,
   Eraser,
   Eye,
@@ -44,7 +45,7 @@ import { connectAt, deleteAt, MOTION_COMPONENTS, motionAt, moveSample, segEnd, s
 import { anchorToCentre, anchorToTracker, lockOf, placeLock, stashLock, toggleLock } from '../../lib/tracking/lock';
 import { assetAspect, trackerCentreCanvas } from '../../lib/tracking/resolve';
 import { LANDMARKS } from '../../lib/tracking/semantic';
-import { attachClip, commitTracking, detachClip, detectPreview, projectTimeOf, retrack, sourceTimeOf, startTracking, stopTracking } from '../../lib/tracking/session';
+import { attachClip, commitTracking, detachClip, detectPreview, projectTimeOf, refreshEdgePreview, retrack, sourceTimeOf, startTracking, stopTracking } from '../../lib/tracking/session';
 import { effectiveSettings, isSemantic, useTrack, type TrackTab } from '../../lib/tracking/state';
 import type { Clip, ClipAttach, MotionComponent, MotionFilter, TrackerKind, TrackMask, TrackMotionModel, TrackMoveMode, TrackRegionShape, TrackSelectionMode } from '../../types';
 import { Btn, cx, Field, Note, PanelHeader, Progress, Section, Segmented, Select, Slider, Toggle } from '../ui';
@@ -288,11 +289,14 @@ function TrackTab({ clip }: { clip: Clip }) {
   const live = useTrack((s) => s.live);
   const detected = useTrack((s) => s.detected);
   const detecting = useTrack((s) => s.detecting);
+  const edgePreview = useTrack((s) => s.edgePreview);
+  const region = useTrack((s) => s.regions[clip.id]);
   const showPoints = useTrack((s) => s.showPoints);
   const lockDraft = useTrack((s) => s.lockDraft);
   const time = useStore((s) => s.time);
   const playing = useStore((s) => s.playing);
   const project = useStore((s) => s.project);
+  const mediaTick = useStore((s) => s.mediaTick);
   const s = effectiveSettings(raw);
   const busy = phase !== 'idle';
   const info = TRACKERS.find((t) => t.id === raw.tracker)!;
@@ -304,6 +308,7 @@ function TrackTab({ clip }: { clip: Clip }) {
   const stats = trackingStats(clip.tracking);
   const aspect = assetAspect(project, clip);
   const lockHolding = !!(clip.tracking?.lock?.enabled || (lockDraft?.clipId === clip.id && lockDraft.enabled));
+  const edgeInfo = s.edgeTrack && edgePreview && edgePreview.clipId === clip.id ? edgePreview : null;
 
   // face / hands / body: show what the model sees in the current frame so a target can be picked
   useEffect(() => {
@@ -311,6 +316,16 @@ function TrackTab({ clip }: { clip: Clip }) {
     const id = setTimeout(() => void detectPreview(clip.id), 220);
     return () => clearTimeout(id);
   }, [semantic, s.tracker, busy, playing, inClip, clip.id, time]);
+
+  // Edge Track: live edge detection + dot placement inside the tracking circle
+  useEffect(() => {
+    if (!s.edgeTrack || busy || playing || !inClip) {
+      if (!s.edgeTrack && useTrack.getState().edgePreview) useTrack.getState().patch({ edgePreview: null });
+      return;
+    }
+    const id = setTimeout(() => void refreshEdgePreview(clip.id), 35);
+    return () => clearTimeout(id);
+  }, [s.edgeTrack, s.edgeSensitivity, s.edgeDots, s.resolution, region, busy, playing, inClip, clip.id, time, mediaTick]);
 
   const found = semantic && detected && detected.clipId === clip.id && detected.kind === s.tracker ? detected.entities.length : null;
   const edit = (fn: (tr: NonNullable<Clip['tracking']>) => ReturnType<typeof splitAt>, fail: string) => {
@@ -342,16 +357,92 @@ function TrackTab({ clip }: { clip: Clip }) {
       </Section>
 
       <Section title="Tracker settings">
-        {s.tracker === 'flow' && (
+        <div className={cx('rounded-xl border p-2.5 transition-colors', s.edgeTrack ? 'border-ok/45 bg-ok/[0.06]' : 'border-line bg-ink/40')}>
+          <Toggle
+            label={
+              <span className="inline-flex items-center gap-1.5">
+                <CircleDot size={13} className={s.edgeTrack ? 'text-ok' : 'text-muted'} />
+                <span>Edge Track</span>
+                {s.edgeTrack && (
+                  <span className="rounded-full bg-ok/15 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.08em] text-ok">
+                    {edgeInfo ? `${edgeInfo.dotCount} dots` : 'On'}
+                  </span>
+                )}
+              </span>
+            }
+            hint="Detects edges inside the tracking circle and places tracking dots along them for faster, more stable tracking."
+            value={!!s.edgeTrack}
+            disabled={busy}
+            onChange={(v) => {
+              if (v) {
+                const keep = raw.tracker === 'object' || raw.tracker === 'flow' || raw.tracker === 'features';
+                set({ edgeTrack: true, shape: 'circle', ...(keep ? {} : { tracker: 'flow' }) });
+              } else {
+                set({ edgeTrack: false });
+              }
+            }}
+          />
+          {s.edgeTrack && (
+            <div className="mt-2.5 space-y-2 border-t border-line/80 pt-2.5">
+              <Slider
+                label="Edge sensitivity"
+                value={s.edgeSensitivity ?? 55}
+                min={10}
+                max={100}
+                def={55}
+                disabled={busy}
+                format={(v) => `${Math.round(v)}%`}
+                onChange={(v) => set({ edgeSensitivity: Math.round(v) })}
+              />
+              <Field label="Edge dots">
+                <Segmented<number>
+                  value={s.edgeDots ?? 32}
+                  onChange={(v) => set({ edgeDots: v })}
+                  options={[
+                    { value: 16, label: '16' },
+                    { value: 24, label: '24' },
+                    { value: 32, label: '32' },
+                    { value: 48, label: '48' },
+                  ]}
+                  className="w-40"
+                />
+              </Field>
+              <Toggle
+                label="Preview detected edges"
+                hint="Highlights edges found by the edge-detection filter inside the tracking circle."
+                value={s.edgePreview !== false}
+                disabled={busy}
+                onChange={(v) => set({ edgePreview: v })}
+              />
+              <div className="flex items-center justify-between gap-2 pt-0.5 text-[10.5px]">
+                <span className={cx('font-mono tabular-nums', edgeInfo && edgeInfo.dotCount < 4 ? 'text-warn' : 'text-muted')}>
+                  {!inClip
+                    ? 'Move playhead onto clip to detect edges'
+                    : !edgeInfo
+                      ? 'Detecting edges in circle…'
+                      : edgeInfo.dotCount < 4
+                        ? `${edgeInfo.dotCount} dots · Position circle over clearer edges`
+                        : `${edgeInfo.dotCount} edge dots · ${edgeInfo.edgeCount} edge px`}
+                </span>
+                {edgeInfo && edgeInfo.dotCount >= 4 && (
+                  <span className="shrink-0 rounded bg-ok/15 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ok">
+                    Ready
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        {s.tracker === 'flow' && !s.edgeTrack && (
           <Field label="Tracking mode">
             <Segmented value={raw.flowMode} onChange={(v) => set({ flowMode: v })} options={[{ value: 'fast', label: 'Fast' }, { value: 'advanced', label: 'Advanced' }]} className="w-40" />
           </Field>
         )}
-        {(s.tracker === 'flow' || s.tracker === 'frame') && (
+        {(s.tracker === 'flow' || s.tracker === 'frame' || s.edgeTrack) && (
           <>
             <Field label="Motion model">
               <Select<TrackMotionModel> value={s.model} onChange={(v) => set({ model: v })} className="w-36" label="Motion model">
-                {MODELS.filter((m) => s.tracker !== 'frame' || m.id !== 'translation').map((m) => (
+                {MODELS.filter((m) => (s.edgeTrack ? m.id === 'translation' || m.id === 'similarity' : s.tracker !== 'frame' || m.id !== 'translation')).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.title}
                   </option>
@@ -366,11 +457,11 @@ function TrackTab({ clip }: { clip: Clip }) {
             <Field label="Selector shape">
               <Segmented<TrackRegionShape>
                 value={s.shape}
-                onChange={(v) => set({ shape: v })}
+                onChange={(v) => set(v === 'circle' ? { shape: v } : { shape: v, edgeTrack: false })}
                 options={[
-                  { value: 'circle', label: <Circle size={13} />, title: 'Circle: follows size, without rotation or perspective changes' },
-                  { value: 'rectangle', label: <RectangleHorizontal size={14} />, title: 'Rectangle: follows size and rotation independently' },
-                  ...(s.tracker === 'flow' ? [{ value: 'quad' as const, label: <Pentagon size={13} />, title: 'Quad: also supports perspective changes with Corner Pin' }] : []),
+                  { value: 'circle', label: <Circle size={13} />, title: s.edgeTrack ? 'Circle (active for Edge Track)' : 'Circle: follows size, without rotation or perspective changes' },
+                  { value: 'rectangle', label: <RectangleHorizontal size={14} />, title: s.edgeTrack ? 'Rectangle (disables Edge Track)' : 'Rectangle: follows size and rotation independently' },
+                  ...(s.tracker === 'flow' ? [{ value: 'quad' as const, label: <Pentagon size={13} />, title: s.edgeTrack ? 'Quad (disables Edge Track)' : 'Quad: also supports perspective changes with Corner Pin' }] : []),
                 ]}
                 className="w-32"
               />
@@ -381,10 +472,10 @@ function TrackTab({ clip }: { clip: Clip }) {
                 <Chip on={s.followSize} disabled={s.cornerPin} onClick={() => set({ followSize: !raw.followSize })} title="Resizes the region as the tracked surface changes size">
                   Follow size
                 </Chip>
-                <Chip on={s.followRotation} disabled={s.cornerPin || s.shape === 'circle' || s.tracker === 'object'} onClick={() => set({ followRotation: !raw.followRotation })} title="Rotates Rectangle or Quad with the tracked surface">
+                <Chip on={s.followRotation} disabled={s.cornerPin || s.shape === 'circle' || s.tracker === 'object' || !!s.edgeTrack} onClick={() => set({ followRotation: !raw.followRotation })} title="Rotates Rectangle or Quad with the tracked surface">
                   Follow rotation
                 </Chip>
-                <Chip on={s.cornerPin} disabled={s.tracker !== 'flow' || s.shape !== 'quad'} onClick={() => set({ cornerPin: !raw.cornerPin, ...(raw.cornerPin ? {} : raw.model === 'translation' || raw.model === 'similarity' ? { model: 'perspective' as const } : {}) })} title="Lets all four Quad corners follow perspective">
+                <Chip on={s.cornerPin} disabled={s.tracker !== 'flow' || s.shape !== 'quad' || !!s.edgeTrack} onClick={() => set({ cornerPin: !raw.cornerPin, ...(raw.cornerPin ? {} : raw.model === 'translation' || raw.model === 'similarity' ? { model: 'perspective' as const } : {}) })} title="Lets all four Quad corners follow perspective">
                   Corner Pin
                 </Chip>
               </div>

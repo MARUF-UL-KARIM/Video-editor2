@@ -24,6 +24,10 @@ export const DEFAULT_SETTINGS: TrackSettings = {
   resolution: 540,
   selection: 'entity',
   landmark: 'nose',
+  edgeTrack: false,
+  edgeSensitivity: 55,
+  edgeDots: 32,
+  edgePreview: true,
 };
 
 const uid = () => 'trk_' + Math.random().toString(36).slice(2, 10);

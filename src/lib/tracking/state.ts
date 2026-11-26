@@ -2,6 +2,7 @@
 // Committed tracking data lives on the clip in the project store; nothing here is persisted.
 import { create } from 'zustand';
 import type { ClipTracking, TrackLock, TrackMoveMode, TrackRegionShape, TrackSettings } from '../../types';
+import type { EdgePreviewData } from './edgePreview';
 import { quadAngle, quadCx, quadCy, rectQuad } from './math';
 import { DEFAULT_SETTINGS } from './motion';
 import type { SemanticEntity, SemanticKind } from './semantic';
@@ -50,6 +51,8 @@ interface TrackUI {
   snapshot: { clipId: string; tracking: ClipTracking | undefined } | null;
   detected: Detection | null;
   detecting: boolean;
+  /** live edge-detection preview inside the tracking circle when Edge Track is enabled */
+  edgePreview: EdgePreviewData | null;
   /** show feature points / motion path on the preview */
   showPoints: boolean;
   /** lock point chosen before a track exists (committed lock lives on the clip) */
@@ -76,6 +79,7 @@ export const useTrack = create<TrackUI>((set) => ({
   snapshot: null,
   detected: null,
   detecting: false,
+  edgePreview: null,
   showPoints: true,
   lockDraft: null,
   patch: (p) => set(p),
@@ -125,6 +129,19 @@ export function conformRegion(q: number[], shape: TrackRegionShape, aspect: numb
 /** Settings as the engine will actually use them for a given tracker (illegal combinations resolved). */
 export function effectiveSettings(s: TrackSettings): TrackSettings {
   const o = { ...s };
+  const supportsEdge = o.tracker === 'object' || o.tracker === 'flow' || o.tracker === 'features';
+  if (o.edgeTrack && supportsEdge) {
+    o.edgeTrack = true;
+    o.shape = 'circle';
+    o.followRotation = false;
+    o.cornerPin = false;
+    o.model = o.model === 'translation' ? 'translation' : 'similarity';
+    o.edgeSensitivity = o.edgeSensitivity ?? 55;
+    o.edgeDots = o.edgeDots ?? 32;
+    o.edgePreview = o.edgePreview ?? true;
+    return o;
+  }
+  o.edgeTrack = false;
   if (o.tracker === 'object') {
     if (o.shape === 'quad') o.shape = 'rectangle';
     o.followRotation = false;
